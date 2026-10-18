@@ -71,8 +71,19 @@ function checkLine(file: string, line: string, lineno: number): Bug[] {
   if (eqMatch && !trimmed.includes('===') && !trimmed.includes('!=')
     && !trimmed.startsWith('//') && !trimmed.startsWith('*')
     && !inString(trimmed, eqMatch)) {
-    bugs.push(mkBug(file, lineno, 'medium', 'loose-equality',
-      'Use === instead of == to avoid type coercion bugs', trimmed));
+    const matchIndex = trimmed.lastIndexOf(eqMatch[0]);
+    const before = trimmed.substring(0, matchIndex);
+    const lineComment = before.lastIndexOf('//');
+    const blockOpen = before.lastIndexOf('/*');
+    const blockClose = before.lastIndexOf('*/');
+    const backtickCount = (before.match(/`/g) || []).length;
+    const inLineComment = lineComment !== -1;
+    const inBlockComment = blockOpen !== -1 && blockOpen > blockClose;
+    const inTemplate = backtickCount % 2 !== 0;
+    if (!inLineComment && !inBlockComment && !inTemplate) {
+      bugs.push(mkBug(file, lineno, 'medium', 'loose-equality',
+        'Use === instead of == to avoid type coercion bugs', trimmed));
+    }
   }
 
   // eval()

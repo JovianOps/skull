@@ -82,6 +82,11 @@ describe('checkLine', () => {
     expect(bugs.some(b => b.pattern === 'loose-equality')).toBe(false);
   });
 
+  it('ignores == inside a trailing line comment', () => {
+    const bugs = checkLine('test.js', 'x == y; // x == y', 1);
+    expect(bugs.some(b => b.pattern === 'loose-equality')).toBe(false);
+  });
+
   it('ignores === comparison (strict)', () => {
     const bugs = checkLine('test.js', 'if (x === 1) {', 1);
     expect(bugs.some(b => b.pattern === 'loose-equality')).toBe(false);
