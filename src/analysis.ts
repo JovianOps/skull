@@ -67,32 +67,45 @@ function checkLine(file: string, line: string, lineno: number): Bug[] {
   const trimmed = line.trim();
 
   // == instead of ===
-  if (/\w+\s*==\s*\w+/.test(trimmed) && !trimmed.includes('===') && !trimmed.includes('!=')
-    && !trimmed.startsWith('//') && !trimmed.startsWith('*')) {
+  const eqMatch = trimmed.match(/\w+\s*==\s*\w+/);
+  if (eqMatch && !trimmed.includes('===') && !trimmed.includes('!=')
+    && !trimmed.startsWith('//') && !trimmed.startsWith('*')
+    && !inString(trimmed, eqMatch)) {
     bugs.push(mkBug(file, lineno, 'medium', 'loose-equality',
       'Use === instead of == to avoid type coercion bugs', trimmed));
   }
 
   // eval()
-  if (/\beval\s*\(/.test(trimmed) && !trimmed.startsWith('//') && !trimmed.startsWith('*')) {
+  const evalMatch = trimmed.match(/\beval\s*\(/);
+  if (evalMatch && !trimmed.startsWith('//') && !trimmed.startsWith('*')
+    && !inString(trimmed, evalMatch)) {
     bugs.push(mkBug(file, lineno, 'high', 'eval',
       'eval() is a security risk and code injection vector', trimmed));
   }
 
-  // hardcoded secrets (key=value patterns)
-  if (/(password|secret|api[_-]?key|token)\s*[=:]\s*['"][^'"]{8,}['"]/i.test(trimmed) && !trimmed.startsWith('//')) {
+  // hardcoded secrets
+  const secretMatch = trimmed.match(/(password|secret|api[_-]?key|token)\s*[=:]\s*['"][^'"]{8,}['"]/i);
+  if (secretMatch && !trimmed.startsWith('//') && !inString(trimmed, secretMatch)) {
     bugs.push(mkBug(file, lineno, 'high', 'hardcoded-secret',
       'Hardcoded credential detected — use environment variables',
       trimmed.replace(/['"][^'"]+['"]/g, '***')));
   }
 
   // TODO/FIXME without tracking reference
-  if (/(TODO|FIXME)\s*:/.test(trimmed) && !trimmed.startsWith('*')) {
+  const todoMatch = trimmed.match(/(TODO|FIXME)\s*:/);
+  if (todoMatch && !trimmed.startsWith('*') && !inString(trimmed, todoMatch)) {
     bugs.push(mkBug(file, lineno, 'low', 'untracked-todo',
       'TODO/FIXME without a tracking reference — create an issue or ticket', trimmed));
   }
 
   return bugs;
+}
+
+/** Returns true if the regex match occurs inside a string literal. */
+function inString(line: string, match: RegExpMatchArray): boolean {
+  const before = line.substring(0, match.index);
+  const quoteCount = (before.match(/['"]/g) || []).length;
+  return quoteCount % 2 !== 0;
 }
 
 function mkBug(
