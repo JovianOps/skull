@@ -1,0 +1,16 @@
+{
+  "name": "skull",
+  "displayName": "Skull — Code Analysis MCP Server",
+  "description": "MCP server for Claude Desktop: codebase analysis, bug detection, and improvement suggestions",
+  "version": "0.1.0",
+  "type": "node",
+  "entry": "dist/index.js",
+  "env": {},
+  "capabilities": {
+    "tools": true,
+    "resources": true
+  },
+  "permissions": {
+    "filesystem": true
+  }
+}
