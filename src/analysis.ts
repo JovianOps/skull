@@ -1,236 +1,173 @@
 import fs from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
 import path from 'node:path';
 
-interface Bug {
+export interface Bug {
   file: string;
   line: number;
   severity: 'low' | 'medium' | 'high';
   pattern: string;
-  description: string;
+  message: string;
   snippet: string;
 }
 
-interface AnalysisReport {
+export interface AnalysisReport {
   files: number;
-  languages: Record<string, number>;
   totalLines: number;
-  complexity: 'low' | 'medium' | 'high';
-  recommendations: string[];
+  languages: Record<string, number>;
+  bugs: Bug[];
+  summary: string[];
 }
 
-interface Improvement {
-  file: string;
-  line: number;
-  suggestion: string;
-  explanation?: string;
-}
+// --- public API ---
 
-export async function analyzeCodebase(rootPath: string): Promise<AnalysisReport> {
-  const files = await collectSourceFiles(rootPath);
-  const languages: Record<string, number> = {};
+export async function analyzePath(target: string): Promise<AnalysisReport> {
+  const files = await collectSourceFiles(target);
+  const bugs: Bug[] = [];
   let totalLines = 0;
+  const languages: Record<string, number> = {};
 
   for (const file of files) {
     const ext = path.extname(file).toLowerCase();
     const lang = extToLanguage(ext);
     languages[lang] = (languages[lang] || 0) + 1;
-    totalLines += await countLines(file);
-  }
 
-  const complexity = totalLines > 10000 ? 'high' : totalLines > 1000 ? 'medium' : 'low';
+    const content = await fs.readFile(file, 'utf-8');
+    totalLines += content.split('\n').length;
+
+    bugs.push(...scanFile(file, content));
+  }
 
   return {
     files: files.length,
-    languages,
     totalLines,
-    complexity,
-    recommendations: generateRecommendations(complexity, Object.keys(languages).length),
+    languages,
+    bugs,
+    summary: generateSummary(bugs),
   };
 }
 
-export async function findBugs(targetPath: string): Promise<Bug[]> {
-  const files = await collectSourceFiles(targetPath);
+// --- scanning logic ---
+
+function scanFile(file: string, content: string): Bug[] {
   const bugs: Bug[] = [];
+  const lines = content.split('\n');
 
-  for (const file of files) {
-    const content = await fs.readFile(file, 'utf-8');
-    const lines = content.split('\n');
-
-    lines.forEach((line, i) => {
-      bugs.push(...checkLine(file, line, i + 1));
-    });
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const lineno = i + 1;
+    bugs.push(...checkLine(file, line, lineno));
   }
 
-  return bugs;
+  return bugs.filter(b => b !== null);
 }
-
-export async function suggestImprovements(filePath: string): Promise<Improvement[]> {
-  const content = await fs.readFile(filePath, 'utf-8');
-  const lines = content.split('\n');
-  const improvements: Improvement[] = [];
-
-  lines.forEach((line, i) => {
-    // Long lines
-    if (line.length > 120) {
-      improvements.push({
-        file: filePath,
-        line: i + 1,
-        suggestion: 'Break long line for readability',
-        explanation: `Line is ${line.length} characters (recommend <120)`,
-      });
-    }
-
-    // console.log in production code
-    if (line.includes('console.log') || line.includes('console.error')) {
-      improvements.push({
-        file: filePath,
-        line: i + 1,
-        suggestion: 'Use proper logging instead of console.log',
-        explanation: 'console.log should not appear in production code',
-      });
-    }
-
-    // TODO/FIXME without tracking
-    if (line.includes('TODO') || line.includes('FIXME')) {
-      improvements.push({
-        file: filePath,
-        line: i + 1,
-        suggestion: 'Consider creating a tracked issue for this TODO/FIXME',
-      });
-    }
-  });
-
-  return improvements;
-}
-
-// --- helpers ---
 
 function checkLine(file: string, line: string, lineno: number): Bug[] {
   const bugs: Bug[] = [];
   const trimmed = line.trim();
 
   // == instead of ===
-  if (/\w+\s*==\s*\w+/.test(trimmed) && !trimmed.includes('===')) {
-    bugs.push({
-      file, line: lineno, severity: 'medium',
-      pattern: 'loose-equality',
-      description: 'Use === instead of == to avoid type coercion bugs',
-      snippet: trimmed,
-    });
+  if (/\w+\s*==\s*\w+/.test(trimmed) && !trimmed.includes('===') && !trimmed.includes('!=')
+    && !trimmed.startsWith('//') && !trimmed.startsWith('*')) {
+    bugs.push(mkBug(file, lineno, 'medium', 'loose-equality',
+      'Use === instead of == to avoid type coercion bugs', trimmed));
   }
 
   // eval()
-  if (/\beval\s*\(/.test(trimmed)) {
-    bugs.push({
-      file, line: lineno, severity: 'high',
-      pattern: 'eval',
-      description: 'eval() is a security risk and code injection vector',
-      snippet: trimmed,
-    });
+  if (/\beval\s*\(/.test(trimmed) && !trimmed.startsWith('//') && !trimmed.startsWith('*')) {
+    bugs.push(mkBug(file, lineno, 'high', 'eval',
+      'eval() is a security risk and code injection vector', trimmed));
   }
 
-  // unused variable declaration (simple heuristic)
-  if (/^\s*(const|let|var)\s+(\w+)\s*=/.test(trimmed) && !trimmed.includes('require')) {
-    const varName = trimmed.match(/^\s*(const|let|var)\s+(\w+)/)?.[2];
-    if (varName && !isUsedInContent(varName)) {
-      bugs.push({
-        file, line: lineno, severity: 'low',
-        pattern: 'unused-var',
-        description: `Variable '${varName}' may be unused`,
-        snippet: trimmed,
-      });
-    }
+  // hardcoded secrets (key=value patterns)
+  if (/(password|secret|api[_-]?key|token)\s*[=:]\s*['"][^'"]{8,}['"]/i.test(trimmed) && !trimmed.startsWith('//')) {
+    bugs.push(mkBug(file, lineno, 'high', 'hardcoded-secret',
+      'Hardcoded credential detected — use environment variables',
+      trimmed.replace(/['"][^'"]+['"]/g, '***')));
   }
 
-  // hardcoded secret
-  if (/(password|secret|api[_-]?key)\s*[:=]\s*['"][^'"]{8,}['"]/i.test(trimmed)) {
-    bugs.push({
-      file, line: lineno, severity: 'high',
-      pattern: 'hardcoded-secret',
-      description: 'Hardcoded credential detected — use environment variables',
-      snippet: trimmed.replace(/['"].*['"]/g, '***'),
-    });
-  }
-
-  // unreachable code after return
-  if (/return\b/.test(trimmed) && lineno < 100) {
-    // checked in caller context
+  // TODO/FIXME without tracking reference
+  if (/(TODO|FIXME)\s*:/.test(trimmed) && !trimmed.startsWith('*')) {
+    bugs.push(mkBug(file, lineno, 'low', 'untracked-todo',
+      'TODO/FIXME without a tracking reference — create an issue or ticket', trimmed));
   }
 
   return bugs;
 }
 
-function isUsedInContent(varName: string): boolean {
-  // simplified — full implementation would check rest of file
-  return false;
+function mkBug(
+  file: string, lineno: number, severity: Bug['severity'],
+  pattern: string, message: string, snippet: string,
+): Bug {
+  return { file, line: lineno, severity, pattern, message, snippet: snippet.slice(0, 120) };
 }
 
-async function collectSourceFiles(targetPath: string): Promise<string[]> {
-  const stat = await fs.stat(targetPath).catch(() => null);
-  if (!stat) return [];
+// --- helpers ---
 
-  if (stat.isFile()) {
-    return [targetPath];
-  }
+export async function collectSourceFiles(target: string): Promise<string[]> {
+  const stat = await fs.stat(target).catch(() => null);
+  if (!stat) return [];
+  if (stat.isFile()) return [target];
 
   const files: string[] = [];
-  async function walk(dir: string) {
-    const entries = await fs.readdir(dir, { withFileTypes: true });
+  async function walk(dir: string, depth: number = 0) {
+    if (depth > 8) return;
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
     for (const entry of entries) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        if (!['node_modules', '.git', 'dist', 'build'].includes(entry.name)) {
-          await walk(full);
-        }
+        if (['node_modules', '.git', 'dist', 'build', '.venv', '__pycache__'].includes(entry.name)) continue;
+        await walk(full, depth + 1);
       } else if (sourceExtensions.has(path.extname(entry.name).toLowerCase())) {
         files.push(full);
       }
     }
   }
-  await walk(targetPath);
+  await walk(target);
   return files;
 }
 
-async function countLines(file: string): Promise<number> {
-  const content = await fs.readFile(file, 'utf-8');
-  return content.split('\n').length;
-}
-
 const sourceExtensions = new Set([
-  '.ts', '.tsx', '.js', '.jsx', '.py', '.rs', '.go', '.java', '.c', '.cpp', '.h',
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
+  '.py', '.rs', '.go', '.java', '.c', '.cpp', '.h', '.hpp',
+  '.php', '.rb', '.lua', '.sh', '.bash',
 ]);
 
 function extToLanguage(ext: string): string {
   const map: Record<string, string> = {
     '.ts': 'TypeScript', '.tsx': 'TypeScript', '.js': 'JavaScript', '.jsx': 'JavaScript',
-    '.py': 'Python', '.rs': 'Rust', '.go': 'Go', '.java': 'Java',
-    '.c': 'C', '.cpp': 'C++', '.h': 'C/C++',
+    '.mjs': 'JavaScript', '.cjs': 'JavaScript', '.py': 'Python', '.rs': 'Rust',
+    '.go': 'Go', '.java': 'Java', '.c': 'C', '.cpp': 'C++', '.h': 'C/C++', '.hpp': 'C++',
+    '.php': 'PHP', '.rb': 'Ruby', '.lua': 'Lua', '.sh': 'Shell', '.bash': 'Shell',
   };
   return map[ext] || ext.replace('.', '').toUpperCase();
 }
 
-function generateRecommendations(complexity: string, langCount: number): string[] {
-  const recs: string[] = [];
-  if (complexity === 'high') recs.push('Consider splitting the codebase into smaller modules or packages.');
-  if (langCount > 3) recs.push('Multiple languages detected — ensure build tooling supports all.');
-  recs.push('Run regular static analysis and code reviews.');
-  return recs;
-}
+function generateSummary(bugs: Bug[]): string[] {
+  const summary: string[] = [];
+  const bySeverity = { high: 0, medium: 0, low: 0 };
+  const byPattern: Record<string, number> = {};
 
-export async function findUnusedVars(content: string): Promise<string[]> {
-  const declared = new Set<string>();
-  const used = new Set<string>();
-
-  const declareRegex = /\b(?:const|let|var)\s+(\w+)/g;
-  let m: RegExpExecArray | null;
-  while ((m = declareRegex.exec(content)) !== null) {
-    declared.add(m[1]);
+  for (const bug of bugs) {
+    bySeverity[bug.severity]++;
+    byPattern[bug.pattern] = (byPattern[bug.pattern] || 0) + 1;
   }
 
-  const useRegex = /\b(\w+)\b/g;
-  while ((m = useRegex.exec(content)) !== null) {
-    if (declared.has(m[1])) used.add(m[1]);
+  if (bySeverity.high > 0) summary.push(`⚠️ ${bySeverity.high} high-severity issues`);
+  if (bySeverity.medium > 0) summary.push(`⚡ ${bySeverity.medium} medium-severity issues`);
+  if (bySeverity.low > 0) summary.push(`ℹ️ ${bySeverity.low} low-severity issues`);
+
+  for (const [pattern, count] of Object.entries(byPattern)) {
+    summary.push(`${count}× ${pattern}`);
   }
 
-  return [...declared].filter(v => !used.has(v) && !['require', 'module', 'exports'].includes(v));
+  return summary.length > 0 ? summary : ['✓ No issues found'];
 }
+
+// Export for testing
+export { checkLine };

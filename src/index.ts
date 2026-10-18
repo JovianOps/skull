@@ -7,7 +7,7 @@ import {
   ListToolsRequestSchema,
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { analyzeCodebase, findBugs, suggestImprovements } from './analysis.js';
+import { analyzePath } from './analysis.js';
 import { listProjectResources, readProjectResource } from './resources.js';
 
 const server = new Server(
@@ -28,41 +28,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: [
       {
         name: 'analyze_codebase',
-        description: 'Analyze a project directory for overall health, structure, and complexity metrics.',
+        description: 'Scan a project directory for bugs, code smells, and code metrics. Returns bug locations, severity, and a summary.',
         inputSchema: {
           type: 'object',
           properties: {
             path: {
               type: 'string',
-              description: 'Absolute path to the project root to analyze.',
-            },
-          },
-          required: ['path'],
-        },
-      },
-      {
-        name: 'find_bugs',
-        description: 'Scan source files for common bug patterns (null derefs, unused vars, etc.).',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            path: {
-              type: 'string',
-              description: 'Absolute path to a file or directory to scan.',
-            },
-          },
-          required: ['path'],
-        },
-      },
-      {
-        name: 'suggest_improvements',
-        description: 'Get improvement suggestions for a source file (refactoring, style, performance).',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            path: {
-              type: 'string',
-              description: 'Absolute path to the source file to analyze.',
+              description: 'Absolute path to the project root or source file to analyze.',
             },
           },
           required: ['path'],
@@ -84,15 +56,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     switch (name) {
       case 'analyze_codebase':
         return {
-          content: [{ type: 'text', text: JSON.stringify(await analyzeCodebase(path), null, 2) }],
-        };
-      case 'find_bugs':
-        return {
-          content: [{ type: 'text', text: JSON.stringify(await findBugs(path), null, 2) }],
-        };
-      case 'suggest_improvements':
-        return {
-          content: [{ type: 'text', text: JSON.stringify(await suggestImprovements(path), null, 2) }],
+          content: [{ type: 'text', text: JSON.stringify(await analyzePath(path), null, 2) }],
         };
       default:
         throw new Error(`Unknown tool: ${name}`);
